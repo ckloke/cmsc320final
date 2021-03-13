@@ -1,0 +1,521 @@
+---
+title: "final project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+### What is anime?
+Anime is animation made in Japan. This can be in the form of TV shows, Movies, music videos, etc.
+
+While anime does appear to have a common aesthetic, anime are by definition made in Japan. *Avatar: The Last Airbender* may look like an anime and it may be one of the best shows ever made, but it is not an anime.
+
+There are many reasons why some people might like anime. For many, high quality animation is one of them.
+
+### What is Studio Deen?
+
+![](higurashi_deen.jpg)
+
+Studio Deen is an animation studio. Unfortunately, Studio Deen has a reputation of being a bad anime studio. While this may seem harsh, there are well-known examples of Studio Deen's... quality.
+
+One example people tend to refer to come from the *Fate/Stay Night: Unlimited Blade Works* adaptation by Studio Deen.
+
+!["Anime was a mistake" - Hayao Miyazaki](fate_deen2.jpg)
+
+
+Naturally, this has turned into one big meme in the anime community. Studio Deen has become synonymous with "quality".
+
+But is this true? Does an anime being made by Studio Deen automatically mean that it's going to be bad?
+
+### Can You Judge a Book by its Cover?
+Are the memes right? Can we judge an anime by its production studio?
+
+Most people refer to their own, qualitative experiences. But can we make a quantitative decision? Can we determine how influential an animation studio is on its animation's quality?
+
+To find out, follow this tutorial on the data science of anime!
+
+### The Tutorial
+In this tutorial, we will walk though the data science pipeline. This pipeline consists of data curation, parsing and management, exploratory data analysis, machine learning/regression to provide analysis, and the curation of a message covering insights learned during the process. We will be using R to perform various techniques to analyze the performance of animation studios and see if we can predict an anime's performance based on its animation studio.
+
+# Data Curation
+### Required Libraries
+We need to first import some libraries. We use tidyverse for manipulating our data sets, stringr for string manipulation, and broom to make pretty tables.
+More information can be found:
+
+* tidyverse - https://www.rdocumentation.org/packages/tidyverse/versions/1.3.0
+* stringr - https://www.rdocumentation.org/packages/stringr/versions/1.4.0
+* broom - https://www.rdocumentation.org/packages/broom/versions/0.5.6
+
+```{r import_library, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(broom)
+```
+
+### Importing the Data
+Our dataset will be the *MyAnimeList Anime Dataset as 2019/02/04* from Kaggle by Adrian L. Ludosan. This dataset can be found at https://www.kaggle.com/aludosan/myanimelist-anime-dataset-as-20190204/data.
+
+#### What is MyAnimeList?
+MyAnimeList is basically IMDB but for anime. Users can create lists of anime they've watched and give ratings to such anime. A lot of anime-related information is available - the anime themselves, animation studios, voice actors, anime characters, etc.
+
+Alternatives do exist, such as AniList, but MyAnimeList is the most well known.
+
+You can access MyAnimeList at https://myanimelist.net.
+
+#### About the Data
+Let's import the dataset.
+
+```{r import_data, message=FALSE}
+big_anime_df <- read_csv("anime.csv")
+head(big_anime_df)
+```
+
+In this dataset, each entry corresponds to an anime. Each entry also has a lot attributes. However, we are only interested in a few, which are:
+
+Identification:
+
+* animeID - the ID used to store the anime on MyAnimeList
+* name - the official American market name of the anime
+
+Information we will use in analysis:
+
+* type - Is it a TV show, Movie, etc.
+* genre - Genre
+* studio - Studio that produced the anime
+* score - The averaged score, from 1-10, of the anime submitted by MyAnimeList users
+  + We will consider this as our quality
+* members - Number of MyAnimeList users with this anime on their anime list
+  + Let's rename this to popularity
+* aired - Time period when the anime was on air
+
+Some attributes that will help in data management:
+
+* status - Airing status of the anime. We only want anime that have finished airing (at the time of this dataset's creation)
+
+Lets see a part of our trimmed down dataset.
+```{r select_parts, message=FALSE}
+anime_df <- big_anime_df %>%
+  select(id = animeID, name, type, genre, studio, score, popularity = members, aired, status)
+knitr::kable(head(anime_df))
+```
+
+# Data Management
+### Converting Dates
+Currently, our dataframe stores dates in a really weird string that shows the time period when the anime aired.
+```{r date_example}
+anime_df %>%
+  filter(id == 30831) %>%
+  select(name, aired) %>%
+  knitr::kable()
+```
+
+In the context of time, anime are usually classified by seasons. For example, the above anime would be a Winter 2016 anime, because it started airing on January 14th, 2016. We can define seasons by the following:
+
+* Winter: January 1st - March 31st
+* Spring: April 1st - June 30th
+* Summer: July 1st - September 30th
+* Winter: October 1st - December 31st
+
+For data manupulation purposes, we will set all winter anime as January 1st, spring as April 1st, and so on.
+```{r convert_date, warning=FALSE}
+anime_df <- anime_df %>%
+  # use substr to find date - {'from': 'yyyy-mm-ddT....}
+  mutate(start_year = substr(aired, 11, 14)) %>%
+  mutate(start_month = as.integer(substr(aired, 16, 17))) %>%
+  mutate(start_season = # this ifelse nest just checks the integer month and converts it into a season month string
+           ifelse(start_month <= 3, "01",
+                  ifelse(start_month <= 6, "04",
+                         ifelse(start_month <= 9, "07", "10")))) %>%
+  mutate(season = as.Date(paste(start_year, start_season, "01", sep="-"))) %>%
+  select(id, name, season, type, genre, studio, score, popularity, status)
+```
+
+Let's check our new dates.
+```{r date_example2}
+filter(anime_df, id==30831) %>% knitr::kable()
+```
+
+### Removing Incomplete Entries
+Unfortunately, some entries in our data are missing some variables. For example,
+```{r example, message=FALSE}
+anime_df %>%
+  filter((id == 5048) # Missing anime
+         | (id == 5208) # Unknown studio
+         | (id == 35565)) %>% # No score
+  knitr::kable()
+```
+
+There are also some anime that have not been released yet (at the time of the dataset's creation) or anime that have not finished airing. Let's remove those anime, along with those that are missing some variables. Let's also remove our status column, since it has served its purpose of filtering out unfinished anime.
+```{r remove}
+anime_df <- anime_df %>%
+  filter(name != "404") %>% # Removes entries without an anime
+  filter(studio != "[]") %>% # Removes unknown studios
+  filter(status == "Finished Airing") %>% # Only allows finished anime
+  select(id, name, genre, studio, score, popularity, season, type) %>% # Select what we want
+  na.omit() # removes all other NAs
+```
+
+Let's check if our our problem examples are still in our dataframe:
+```{r example2}
+anime_df %>%
+  filter((id == 5048) # Missing anime
+         | (id == 5208) # Unknown studio
+         | (id == 35565)) %>% # No score
+  knitr::kable()
+```
+
+### Dealing with Lists as Variables
+Some of our attributes have lists as variables; this is difficult to deal with. For example, say I wanted to graph anime scores by genre. The problem is it would be extremely messy for me to try and identify if an entry correlated with a genre while plotting. Thus, it would be easier to tidy the data up such that attributes do not contain multiple values. Instead, we will be creating multiple entries with the multi-variable attributes being split up acroos those entries.
+
+Let's use this anime as an example.
+```{r multi_ex}
+filter(anime_df, id == 30) %>% knitr::kable()
+```
+
+### Separting Multi-Studio Anime
+Let's separate studios so that they are split into different entries. An anime produced by two studios would have to entries of the same anime.
+```{r split_studios}
+# Studio is attribute 4
+split_studios <- function(df) {
+  df_size <- nrow(df) # set size for loop
+  new_df <- df # df being modified and returned
+  
+  for (i in 1:df_size) {
+    # use regex to clean the genre vector - remove brackets and spaces
+    cleaned_studios <- str_remove_all(df[[4]][i], "(\\[)|(\\])|(\\')|( )")
+    split_str <- strsplit(cleaned_studios, ",")[[1]] # genres are separated by commas. split.
+    split_size <- length(split_str) # find number of genres
+    new_df[[4]][i] <- split_str[1] # set current entry to first genre
+    
+    # if extra genres, add row to the df
+    if (split_size > 1) {
+      for (j in 2:split_size) {
+        new_df <- add_row(new_df, id=df[[1]][i], name=df[[2]][i],
+                          genre=df[[3]][i],
+                          studio=split_str[j], score=df[[5]][i], popularity=df[[6]][i],
+                          season=df[[7]][i], type=df[[8]][i])
+      }
+    }
+  }
+  na.omit(new_df) # return
+}
+
+studio_df <- split_studios(anime_df)
+```
+
+Let's check that it worked.
+```{r studio_ex}
+filter(studio_df, id == 30) %>% knitr::kable()
+```
+
+### Separating Multiple Genres
+Let's do the same with genres.
+```{r split_generes}
+# Create a function to split the genre vector, then add the extra genres as entries.
+# At this step, anime_df currently has 8 attributes (id, name, genre, ...).
+# Genre is attribute 3, so access by df[[3]]
+split_genres <- function(df) {
+  df_size <- nrow(df) # set size for loop
+  new_df <- df # df being modified and returned
+  
+  for (i in 1:df_size) {
+    # use regex to clean the genre vector - remove brackets and spaces
+    cleaned_genres <- str_remove_all(df[[3]][i], "(\\[)|(\\])|(\\')|( )")
+    split_str <- strsplit(cleaned_genres, ",")[[1]] # genres are separated by commas. split.
+    split_size <- length(split_str) # find number of genres
+    new_df[[3]][i] <- split_str[1] # set current entry to first genre
+    
+    # if extra genres, add row to the df
+    if (split_size > 1) {
+      for (j in 2:split_size) {
+        new_df <- add_row(new_df, id=df[[1]][i], name=df[[2]][i],
+                          genre=split_str[j],
+                          studio=df[[4]][i], score=df[[5]][i], popularity=df[[6]][i],
+                          season=df[[7]][i], type=df[[8]][i])
+      }
+    }
+  }
+  na.omit(new_df) # return
+}
+
+studio_genre_df <- split_genres(studio_df)
+```
+
+Let's check that it worked.
+```{r genre_ex}
+filter(studio_genre_df, id == 30) %>% knitr::kable()
+```
+
+### Additional Modifications
+#### Time
+Anime has a long history. The oldest anime on MyAnimeList is from 1917!
+```{r old, echo=FALSE}
+big_anime_df %>%
+  filter(animeID == 6654) %>%
+  mutate(start_date = as.Date(substr(aired, 11, 20))) %>%
+  select(id = animeID, name, start_date, type, genre) %>%
+  knitr::kable()
+```
+
+Since we started this because of Studio Deen's reputation, let's keep our timeframe to within Studio Deen's activity. According to MyAnimeList, Studio Deen did their first solo work in 1985, so let's filter our anime to only include those made during or after 1985.
+```{r filter_date}
+studio_genre_df <- studio_genre_df %>%
+  filter(season >= as.Date("1985-01-01"))
+```
+
+# Exploratory Data Analysis - Data Visualization
+Now that we have our data, we can start exploratory data analysis. We do exploratory data analysis to visualize and understand a bit more about the data and see what we would like to do with it in the future. With the information we learn from exploratory data analysis, we will be more prepared for performing our testing.
+
+### Type of Medium
+```{r type}
+studio_genre_df %>%
+  group_by(id, type) %>%
+  summarize(score=mean(score)) %>%
+  ggplot(aes(x = type, y = score)) +
+  geom_violin(draw_quantiles = c(1/4, 1/2, 3/4)) +
+  labs(title="Score vs. Type of Anime Medium", x="Type of Media", y="Score")
+```
+
+Here, we look at how different types of media tend to score. There appears to be three tiers - TV shows and movies at the top, followed by specials and OVAs, with ONAs and music videos at the bottom. Some factors that might lead to this result can be explained. Music videos and ONAs (Original Net Animation, basically web anime; think YouTube series length) tend to be shorter. On the other hand, movies and TV shows are by far the most popular; most people are exposed to anime through movies and TV.
+
+### Genre
+```{r genre}
+studio_genre_df %>%
+  group_by(id, genre) %>%
+  summarize(score=mean(score)) %>%
+  ggplot(aes(x = genre, y = score)) +
+  geom_violin(draw_quantiles = c(1/4, 1/2, 3/4)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title="Score vs. Genre", x="Genre", y="Score")
+```
+
+This chart is rather crowded, but we can still make some observations from it. Here, we look at how different genres tend to score. Most tend to have averages and spread. However, some tend to score low, such as hentai, yaoi, and yuri, while others tend to score high, such as mystery and thriller. One factor that may play into this difference is respect; hentai, or anime porn, can hardly be considered classy, while mystery and thriller can be considered respectable genres.
+
+### Seasons
+#### Starting Air Date vs. Score
+```{r date, message=FALSE}
+studio_genre_df %>%
+  group_by(id, season) %>%
+  summarize(score=mean(score)) %>%
+  ggplot(aes(x=season, y=score)) +
+  geom_point(alpha = 1/5) +
+  geom_smooth() +
+  labs(title="Score over Starting Air Date", x="Air Date", y="Score")
+```
+
+Let's start with a simple scatter plot of every anime score vs. their air date. We can gather a couple of observations from this. First, it appears that a higher proportion of anime were made recently. Second, it appears that the spread of anime scores remains relatively wide throughout the time period. Third, it appears that the average score per season seems rather constant, hovering around 6.5-7.
+
+#### Starting Air Date vs. Score by Studio
+Next, let's consider animation studios.
+```{r date_studio, message=FALSE}
+# Filter out some studios to highlight
+selected_studio_season_df <- studio_genre_df %>%
+  filter((studio == "ToeiAnimation") | (studio == "KyotoAnimation") | (studio == "StudioDeen") | (studio == "Gainax")) %>%
+  group_by(studio, season) %>%
+  summarize(score=mean(score))
+
+# Contains every studio
+studio_season_df <- studio_genre_df %>%
+  group_by(studio, season) %>%
+  summarize(score=mean(score))
+
+# Plot
+ggplot() +
+  geom_point(aes(season, score), data = studio_season_df, color = "gray", alpha = 1/2) +
+  geom_smooth(aes(season, score), data = studio_season_df, color = "black") +
+  geom_point(aes(season, score, color=studio), data = selected_studio_season_df, size = 3/2) +
+  geom_smooth(aes(season, score, color=studio), data = selected_studio_season_df, size = 1) +
+  labs(title="Score over Time per Animation Studio", x="Air Date", y="Score")
+```
+
+With numerous animation studios, this would've been a complete mess. So, what we've done here is highlight some animation studios of interest:
+
+* Toei Animation - Known for producing well-known long-running series like One Piece, Dragon Ball Z, Digimon, etc.
+* Kyoto Animation - Has a reputation of good animation quality.
+* Studio Deen - As discussed previously, has a reputation of bad animation quality.
+* Gainax - Tends to produce anime with weird endings.
+
+Some observations can be drawn from this chart. One is that the spread of anime scores per studio seems to be quite large. Another is that each animation studio also appears to follow their own unique trend; Toei Animation is constantly doing a bit better than average, Kyoto Animation seems to be rising in score, while Gainax and Studio Deen seem to have hit some troubles lately.
+
+With our selected studios, we can see that different studios can behave differently over time.
+
+### Popularity
+```{r popularity, message=FALSE}
+studio_genre_df %>%
+  group_by(id, popularity) %>%
+  summarize(score=mean(score)) %>% # note - our new score should be the same as old score.
+  ggplot(aes(x=popularity, y=score)) + 
+  geom_point(alpha = 1/5) +
+  geom_smooth() +
+  labs(title="Score vs. Popularity", x="# of Users", y="Score")
+```
+
+From this chart, we can make some observations. Most obvious is the distribution of anime; most anime tend to be clustered towards the left. Another observation is the relationship between popularity and score; there appears to be a correlation between an anime's popularity and its score. This appears to have eventual diminishing returns, similar to that of a logistic relationship.
+
+Looking at this might suggest that since higher popularity correlates with higher scores, our selected studios might have performed better because they have more popular shows. Let's see if we can visualize this.
+
+#### Score vs. Popularity by Studio
+Let's look at the same animation studios.
+```{r pop_studio, message=FALSE}
+# Filter for popularity < 700000 because none of the animation studios have shows with more popularity
+# Filter out some studios to highlight
+selected_popularity_df <- studio_genre_df %>%
+  filter(popularity < 700000) %>%
+  filter((studio == "ToeiAnimation") | (studio == "KyotoAnimation") | (studio == "StudioDeen") | (studio == "Gainax")) %>%
+  group_by(id, studio, popularity) %>%
+  summarize(score=mean(score))
+
+# Contains every studio
+popularity_df <- studio_genre_df %>%
+  filter(popularity < 700000) %>%
+  group_by(id, studio, popularity) %>%
+  summarize(score=mean(score))
+
+# Plot
+ggplot() +
+  geom_point(aes(popularity, score), data = popularity_df, color = "gray", alpha = 1/2) +
+  geom_smooth(aes(popularity, score), data = popularity_df, color = "black") +
+  geom_point(aes(popularity, score, color=studio), data = selected_popularity_df, size = 3/2) +
+  geom_smooth(aes(popularity, score, color=studio), data = selected_popularity_df, size = 1) +
+  labs(title="Score vs. Popularity", x="# of Users", y="Score")
+```
+
+One thing to note is that a lot of anime produced by the selected studios also appear to cluster on the lower popularity end, showing that just because an anime won't become popular just because it was made by an established studio.
+
+For the most part, the selected animation studios tend to follow the general correlation between popularity and score. Toei Animation and Studio Deen seem to have a bit better scores at the lower popularity end, although this difference is small and further analysis would have to be done to see if it is statistically significant.
+
+Kyoto Animation and Gainax, however, looks completely different. Their scores seems to be quite a bit higher for its popularity compared to the average anime.
+
+# Machine Learning
+Recall our reason for performing the data science pipeline. We wanted to see if we can determine how important an anime's production studio is in their quality. One way we can do this is through random forests.
+
+### Random Forests
+A regression tree is one way to predict an outcome based on some predictor variables. It works by partitioning based on predictor variables, then determining the outcome based on the average of the partitioned predictor sections. Unfortunately, there are some disadvantages of regression trees, such as being difficult to assess uncertainty in inference about trees and results being variable due to the instability of tree selection.
+
+One way we can improve prediction performance and reduce instability is by averaging multiple trees, thus creating a random forest. This does have the problem of removing interprability compared to regression trees, since we are averaging multiple trees with different predictor paths. However, we are able to measure variable importance because for every tree constructed, we can measure the effect of permutations on a variable on the error rate.
+
+A comprehensive introduction to random forests can be found here: https://dzone.com/articles/a-comprehensive-guide-to-random-forest-in-r
+
+### Data Preparation
+We will need to use the library randomForest for our random forest. More information here: https://cran.r-project.org/web/packages/randomForest/randomForest.pdf
+```{r rf, message=FALSE}
+library(randomForest)
+set.seed(1639) # for replicability; sets seed for RNG for "randomness"
+```
+
+Before creating our random forest, we need a training set and a testing set. Let's use 1985-2014 as our training set and >= 2015 as our testing set. We also need to convert our char columns to factor columns.
+
+Also, unfortunately, randomForest can not handle categorical predictors with more than 53 categories, meaning we will have to trim our dataset by studios. Let's trim it so only the studios that have made the 53 most anime are included.
+```{r sets}
+# Transform data to how many anime made per studio
+studio_count <- studio_genre_df %>%
+  mutate(count = 1) %>%
+  group_by(id, studio) %>%
+  summarize(count = mean(count)) %>%
+  group_by(studio) %>%
+  summarize(count = sum(count))
+
+# sort by anime made
+studio_count <- studio_count[order(studio_count$count, decreasing=TRUE), c(1,2)]
+
+# Slice the top 53 and extract the names of studios
+top_53_studios <- slice(studio_count, 1:53)[[1]]
+top_53_str <- paste(top_53_studios, collapse="_")
+  
+# Filter data with top 53 studios
+top_53_studios_df <- studio_genre_df %>%
+  filter((str_detect(top_53_str, paste("_", studio, "_", sep=""))) # 2:52
+    | (top_53_studios[1] == studio) # first element - should be Toei
+    | (top_53_studios[53] == studio) # last element - should be StudioGokumi
+    )
+
+# Make df with factor cols instead of chars
+sets_df <- top_53_studios_df
+sets_df$genre <- as.factor(sets_df$genre)
+sets_df$studio <- as.factor(sets_df$studio)
+sets_df$type <- as.factor(sets_df$type)
+
+# Training and test sets
+train_set <- sets_df %>%
+  filter(season < as.Date("2015-01-01"))
+test_set <- sets_df %>%
+  filter(season >= as.Date("2015-01-01"))
+```
+
+Now, make the random forest
+```{r randomforest}
+rf <- randomForest(score~genre+type+season+studio+popularity, importance=TRUE, mtry=3, data=train_set)
+rf
+```
+
+Let's see how well our random forest does when we give it some data.
+```{r graph1, message=FALSE}
+# Function that calculates RMSE
+calc_rmse <- function(actual_scores, predicted_scores) {
+  sqrt(mean((actual_scores-predicted_scores)^2))
+}
+
+# Create dataframe of predicted and actual scores on training set, then graph
+train_results <- predict(rf, newdata=train_set)
+train_actual <- train_set$score
+
+train_compare <- data.frame(predicted = train_results, actual = train_actual)
+
+train_compare %>%
+  ggplot(aes(x=actual, y=predicted)) +
+  geom_point() +
+  geom_smooth(method=lm)
+
+calc_rmse(train_actual, train_results)
+```
+
+Our results on our training set look pretty good. The spread is low and our actual and predicted results seem to have a good 1:1 correspondence. Of course, this is to be expected; this is the training set our forest used.
+
+```{r graph2}
+# Do the same with the test set
+test_results <- predict(rf, newdata=test_set)
+test_actual <- test_set$score
+
+test_compare <- data.frame(predicted = test_results, actual = test_actual)
+
+test_compare %>%
+  ggplot(aes(x=actual, y=predicted)) +
+  geom_point() +
+  geom_smooth(method=lm)
+
+calc_rmse(test_actual, test_results)
+```
+
+Our results on our test set look less promising, which should be expected. Still, we see a linear correlation between actual and predicted results
+
+Let's visualize the importance of each variable.
+```{r importance}
+# Make table
+variable_importance <- importance(rf)
+variable_importance <- round(variable_importance, digits=2)
+knitr::kable(variable_importance)
+
+# Make Bar Plot
+var_imp_df <- data.frame(variable_importance) %>%
+  rownames_to_column("variable")
+var_imp_df %>%
+  ggplot(aes(x=variable, y=IncNodePurity)) +
+  geom_bar(stat='identity') +
+  labs(title="Variable Importance for Random Forest", x="Variable", y="Importance")
+```
+
+Our random forest found that popularity was by far the most important variable in deciding scores. Based on our exploratory data analysis, this finding does match our expectations; we observed that popularity strongly correlated with scores. The other variables, which we also found to be at least somewhat influential in our exploratory data analysis, match the observatiosn found in the random forest as well.
+
+One thing to note is that studios do seem to be more influential than genre, season, or type. This could mean that animation studios, while not the most influential variable related to an anime's quality, is pretty important, relative to other variables. To answer our question of the influnece of studios on animation quality, we can show that an influence can be correlated.
+
+# Conclusion
+Using the data science pipeline, we were able to answer a common question - do animation studios matter? - quantatively using data. We found that yes, to some extent, they do influence the quality of an anime. A Studio Deen show will be influenced by how well Studio Deen does. A Kyoto Animation show will be influenced by how well Kyoto Animation does.
+
+The methods discussed in this tutorial also serve as an introduction to the pipeline of data science. Using these methods, one can analyze data from other datasets, or continue to explore this one. Hopefully this tutorial was somewhat useful.
+
+One final note I would like to discuss is the fact that while we can perform all this data analysis on all sorts of datasets and draw remarkable conclusions, if we are missing pieces of data, or we are interpreting the data differently, we can draw wildly different conclusions. For example, remember when I talked about Studio Deen having a reputation for poor quality animation? Through this data analysis pipeline, I showed that there was some studio influence on anime score, but this has nothing to do with animation quality! The two images I provided in the beginning are from *Fate/stay night Movie: Unlimited Blade Works* and *Higurashi no Naku Koro ni* which have scores of 7.45 and 8.00, respectively, on MyAnimeList. As we've seen in our data analysis, both are respectable scores far above the average. It's usually a good idea to understand what your data actually means.
+
+Thanks for reading.
